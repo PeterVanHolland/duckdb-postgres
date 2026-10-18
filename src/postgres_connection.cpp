@@ -65,8 +65,12 @@ static bool ResultHasError(PGresult *result) {
 	}
 }
 
+static bool ContainsNullByte(const string &query) {
+	return query.find('\0') != string::npos;
+}
+
 void PostgresConnection::VerifyNoNullByte(const string &query) {
-	if (query.find('\0') != string::npos) {
+	if (ContainsNullByte(query)) {
 		throw InvalidInputException("Failed to execute query \"%s\": Postgres does not support NULL-bytes in queries",
 		                            query);
 	}
@@ -214,6 +218,10 @@ bool PostgresConnection::PingServer(const std::string &health_check_query) {
 	}
 	if (health_check_query.empty()) {
 		return true;
+	}
+	// libpq cannot send a query with a NULL byte, so such a health check fails like any failing query
+	if (ContainsNullByte(health_check_query)) {
+		return false;
 	}
 	PGresult *res = PQexec(conn, health_check_query.c_str());
 	PostgresResult res_holder(res);
