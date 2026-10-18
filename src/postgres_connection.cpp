@@ -219,7 +219,6 @@ bool PostgresConnection::PingServer(const std::string &health_check_query) {
 	if (health_check_query.empty()) {
 		return true;
 	}
-	// libpq cannot send a query with a NULL byte, so such a health check fails like any failing query
 	if (ContainsNullByte(health_check_query)) {
 		return false;
 	}
