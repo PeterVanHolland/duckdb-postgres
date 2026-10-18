@@ -63,7 +63,27 @@ PGconn *PostgresUtils::PGConnectInternal(const string &dsn, const string &attach
 		}
 	}
 	PQsetNoticeProcessor(conn, PGNoticeProcessor, nullptr);
+	try {
+		RequireStandardStrings(conn);
+	} catch (...) {
+		PQfinish(conn);
+		throw;
+	}
 	return conn;
+}
+
+void PostgresUtils::RequireStandardStrings(PGconn *conn) {
+	// the server reports the setting on every change, so this costs no round trip when it is on
+	auto standard_strings = PQparameterStatus(conn, "standard_conforming_strings");
+	if (!standard_strings || string(standard_strings) != "off") {
+		return;
+	}
+	auto result = PQexec(conn, "SET standard_conforming_strings = on");
+	bool failed = PQresultStatus(result) != PGRES_COMMAND_OK;
+	PQclear(result);
+	if (failed) {
+		throw IOException("Unable to turn on standard_conforming_strings in Postgres: %s", PQerrorMessage(conn));
+	}
 }
 
 string PostgresUtils::TypeToString(const LogicalType &input) {
