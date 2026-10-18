@@ -1,4 +1,5 @@
 #include "postgres_utils.hpp"
+#include "postgres_result.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 
 #include "dbconnector/query/query_writer.hpp"
@@ -78,10 +79,8 @@ void PostgresUtils::RequireStandardStrings(PGconn *conn) {
 	if (!standard_strings || string(standard_strings) != "off") {
 		return;
 	}
-	auto result = PQexec(conn, "SET standard_conforming_strings = on");
-	bool failed = PQresultStatus(result) != PGRES_COMMAND_OK;
-	PQclear(result);
-	if (failed) {
+	PostgresResult result(PQexec(conn, "SET standard_conforming_strings = on"));
+	if (PQresultStatus(result.res) != PGRES_COMMAND_OK) {
 		throw IOException("Unable to turn on standard_conforming_strings in Postgres: %s", PQerrorMessage(conn));
 	}
 }
