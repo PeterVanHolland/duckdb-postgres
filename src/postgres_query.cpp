@@ -173,6 +173,7 @@ static unique_ptr<FunctionData> PGQueryBind(ClientContext &context, TableFunctio
 
 	auto conn = con.GetConn();
 	// prepare execution of the query to figure out the result types and names
+	PostgresConnection::VerifyNoNullByte(sql);
 	auto prepared = PQprepare(conn, "", sql.c_str(), 0, nullptr);
 	PostgresResult prepared_wrapper(prepared);
 	if (!prepared) {

@@ -93,6 +93,8 @@ public:
 
 	static void DebugSetPrintQueries(bool print);
 	static bool DebugPrintQueries();
+	//! Throws if the query contains a NULL byte, since libpq would send only the text before it
+	static void VerifyNoNullByte(const string &query);
 
 private:
 	PGresult *PQExecute(optional_ptr<ClientContext> context, const string &query,
