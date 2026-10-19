@@ -1,0 +1,80 @@
+# name: test/sql/storage/attach_null_byte_query.test
+# description: Test that a query with a null byte is rejected instead of being sent up to the null byte
+# group: [storage]
+
+require postgres_scanner
+
+require-env POSTGRES_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'dbname=postgresscanner' AS s (TYPE POSTGRES)
+
+statement ok
+CALL postgres_execute('s', 'DROP TABLE IF EXISTS null_byte_query')
+
+statement ok
+CALL postgres_execute('s', 'CREATE TABLE null_byte_query(i INTEGER, v VARCHAR)')
+
+statement ok
+CALL postgres_execute('s', 'INSERT INTO null_byte_query VALUES (1, ''a''), (2, ''b'')')
+
+foreach prepare true false
+
+statement error
+CALL postgres_execute('s', 'DELETE FROM null_byte_query WHERE i > 0' || chr(0) || ' AND i = 2', prepare={prepare})
+----
+Postgres does not support NULL-bytes in queries
+
+endloop
+
+query II
+SELECT * FROM s.null_byte_query ORDER BY i
+----
+1	a
+2	b
+
+statement error
+FROM postgres_query('s', 'SELECT 1 AS x' || chr(0) || ', 2 AS y')
+----
+Postgres does not support NULL-bytes in queries
+
+statement error
+SELECT count(*) FROM s.null_byte_query WHERE v = 'a' || chr(0)
+----
+Postgres does not support NULL-bytes in queries
+
+statement ok
+ATTACH 'dbname=postgresscanner' AS s_schema (TYPE POSTGRES, SCHEMA 'public' || chr(0) || 'x')
+
+statement error
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 's_schema'
+----
+Postgres does not support NULL-bytes in queries
+
+# a health check query with a null byte fails like any other failing health check
+
+statement ok
+ATTACH 'dbname=postgresscanner' AS s_pool (TYPE POSTGRES)
+
+query I
+SELECT catalog_name
+FROM postgres_configure_pool(catalog_name='s_pool', health_check_query='SELECT 1' || chr(0) || 'x')
+----
+s_pool
+
+query II
+SELECT catalog_name, available_connections
+FROM postgres_configure_pool(catalog_name='s_pool')
+----
+s_pool	1
+
+query I
+FROM postgres_query('s_pool', 'SELECT 42')
+----
+42
+
+query II
+SELECT catalog_name, available_connections
+FROM postgres_configure_pool(catalog_name='s_pool')
+----
+s_pool	0

@@ -65,8 +65,20 @@ static bool ResultHasError(PGresult *result) {
 	}
 }
 
+static bool ContainsNullByte(const string &query) {
+	return query.find('\0') != string::npos;
+}
+
+void PostgresConnection::VerifyNoNullByte(const string &query) {
+	if (ContainsNullByte(query)) {
+		throw InvalidInputException("Failed to execute query \"%s\": Postgres does not support NULL-bytes in queries",
+		                            query);
+	}
+}
+
 PGresult *PostgresConnection::PQExecute(optional_ptr<ClientContext> context, const string &query,
                                         const PostgresParameters &params, int format) {
+	VerifyNoNullByte(query);
 	if (PostgresConnection::DebugPrintQueries()) {
 		Printer::Print(query + "\n");
 	}
@@ -98,7 +110,7 @@ unique_ptr<PostgresResult> PostgresConnection::TryQuery(optional_ptr<ClientConte
                                                         optional_ptr<string> error_message,
                                                         const PostgresParameters &params, int format) {
 	lock_guard<mutex> guard(connection->connection_lock);
-	auto result = PQExecute(context, query.c_str(), params, format);
+	auto result = PQExecute(context, query, params, format);
 
 	if (ResultHasError(result)) {
 		if (error_message) {
@@ -127,6 +139,7 @@ void PostgresConnection::Execute(optional_ptr<ClientContext> context, const stri
 }
 
 vector<unique_ptr<PostgresResult>> PostgresConnection::ExecuteQueries(ClientContext &context, const string &queries) {
+	VerifyNoNullByte(queries);
 	if (PostgresConnection::DebugPrintQueries()) {
 		Printer::Print(queries + "\n");
 	}
@@ -205,6 +218,9 @@ bool PostgresConnection::PingServer(const std::string &health_check_query) {
 	}
 	if (health_check_query.empty()) {
 		return true;
+	}
+	if (ContainsNullByte(health_check_query)) {
+		return false;
 	}
 	PGresult *res = PQexec(conn, health_check_query.c_str());
 	PostgresResult res_holder(res);

@@ -61,7 +61,7 @@ void PostgresConnection::BeginCopyTo(ClientContext &context, PostgresCopyState &
 	}
 	query += ")";
 
-	PostgresResult pg_res(PQExecute(context, query.c_str()));
+	PostgresResult pg_res(PQExecute(context, query));
 	auto result = pg_res.res;
 	if (!result || PQresultStatus(result) != PGRES_COPY_IN) {
 		auto error = result ? PQresultErrorMessage(result) : PQerrorMessage(GetConn());
