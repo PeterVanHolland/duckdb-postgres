@@ -38,6 +38,16 @@ FROM postgres_query('s', 'SELECT 1 AS x' || chr(0) || ', 2 AS y')
 ----
 Postgres does not support NULL-bytes in queries
 
+# the plain query modes execute the statement prepared in bind, which has no query text to check at execution
+foreach mode PLAIN_QUERY_TEXT PLAIN_QUERY_BINARY
+
+statement error
+FROM postgres_query('s', 'SELECT 1 AS x' || chr(0) || ', 2 AS y', query_mode='{mode}')
+----
+Postgres does not support NULL-bytes in queries
+
+endloop
+
 statement error
 SELECT count(*) FROM s.null_byte_query WHERE v = 'a' || chr(0)
 ----
