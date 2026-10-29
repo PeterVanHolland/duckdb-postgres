@@ -14,6 +14,7 @@
 #include "postgres_utils.hpp"
 #include "postgres_connection.hpp"
 #include "postgres_parameters.hpp"
+#include "postgres_prepared_statement.hpp"
 #include "storage/postgres_connection_pool.hpp"
 
 namespace duckdb {
@@ -39,6 +40,8 @@ public:
 	// required for get_bind_info and only used there
 	weak_ptr<ClientContext> context_ptr;
 
+	//! Set by postgres_query, executed (without parameters) on the scan connection before the main query
+	vector<string> preliminary_queries;
 	string sql;
 	PostgresParameters params;
 	idx_t pages_approx = 0;
@@ -60,12 +63,17 @@ public:
 	//! Set by postgres_query's bind when the statement returns no columns (a command like DDL, or
 	//! DML without RETURNING). InitGlobalState executes it and returns a single-row Success result.
 	bool command_only = false;
+	//! Set by postgres_query, clears the attached catalog cache after the query is executed
+	bool clear_catalog_cache = false;
 	idx_t max_threads = 1;
 	PostgresTypeConfig type_config;
 
 	string limit_clause;
 
 	uint64_t pinned_connection_id = 0;
+
+	//! Statement prepared by postgres_query's bind to describe the query result
+	unique_ptr<PostgresPreparedStatement> prepared_statement;
 
 public:
 	void SetTablePages(idx_t approx_num_pages);
