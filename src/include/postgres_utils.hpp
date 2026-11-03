@@ -111,6 +111,8 @@ public:
 	static PostgresCatalog &GetCatalogByName(ClientContext &context, const std::string &name);
 
 	static void DeduplicateColumns(vector<Identifier> &names);
+	//! Turns on standard_conforming_strings when the server has it off, since the SQL we send uses standard literals
+	static void RequireStandardStrings(PGconn *conn);
 
 private:
 	static mutex libpq_init_lock;
