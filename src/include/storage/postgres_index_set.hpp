@@ -19,7 +19,8 @@ class TableCatalogEntry;
 
 class PostgresIndexSet : public PostgresInSchemaSet {
 public:
-	PostgresIndexSet(PostgresSchemaEntry &schema, unique_ptr<PostgresResultSlice> index_result = nullptr);
+	PostgresIndexSet(PostgresSchemaEntry &schema, unique_ptr<PostgresResultSlice> index_result = nullptr,
+	                 bool entries_loaded = true);
 
 public:
 	static string GetInitializeQuery(const vector<string> &schemas);

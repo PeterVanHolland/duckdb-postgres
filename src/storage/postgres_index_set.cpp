@@ -14,8 +14,9 @@
 
 namespace duckdb {
 
-PostgresIndexSet::PostgresIndexSet(PostgresSchemaEntry &schema, unique_ptr<PostgresResultSlice> index_result_p)
-    : PostgresInSchemaSet(schema, !index_result_p), index_result(std::move(index_result_p)) {
+PostgresIndexSet::PostgresIndexSet(PostgresSchemaEntry &schema, unique_ptr<PostgresResultSlice> index_result_p,
+                                   bool entries_loaded)
+    : PostgresInSchemaSet(schema, !index_result_p && entries_loaded), index_result(std::move(index_result_p)) {
 }
 
 string PostgresIndexSet::GetInitializeQuery(const vector<string> &schemas) {
@@ -35,7 +36,12 @@ ORDER BY pg_namespace.oid;
 
 void PostgresIndexSet::LoadEntries(ClientContext &context, PostgresTransaction &transaction) {
 	if (!index_result) {
-		throw InternalException("PostgresIndexSet::LoadEntries called without an index result defined");
+		// a lazily loaded schema reads its indexes on first use, information_schema introspection reads none
+		if (PostgresUtils::UseInformationSchemaIntrospection(context)) {
+			return;
+		}
+		index_result = make_uniq<PostgresResultSlice>(
+		    transaction.Query(GetInitializeQuery(vector<string> {schema.name.GetIdentifierName()})));
 	}
 	auto &result = index_result->GetResult();
 	for (idx_t row = index_result->start; row < index_result->end; row++) {

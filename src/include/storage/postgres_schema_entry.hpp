@@ -22,7 +22,8 @@ class PostgresTransaction;
 
 class PostgresSchemaEntry : public SchemaCatalogEntry {
 public:
-	PostgresSchemaEntry(Catalog &catalog, CreateSchemaInfo &info);
+	//! A schema without loaded entries introspects its tables, types and indexes when they are first used
+	PostgresSchemaEntry(Catalog &catalog, CreateSchemaInfo &info, bool entries_loaded = true);
 	PostgresSchemaEntry(Catalog &catalog, CreateSchemaInfo &info, unique_ptr<PostgresResultSlice> tables,
 	                    unique_ptr<PostgresResultSlice> enums, unique_ptr<PostgresResultSlice> composite_types,
 	                    unique_ptr<PostgresResultSlice> indexes);

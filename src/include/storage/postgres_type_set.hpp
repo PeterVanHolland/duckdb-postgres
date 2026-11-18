@@ -21,7 +21,8 @@ struct PGTypeInfo;
 class PostgresTypeSet : public PostgresInSchemaSet {
 public:
 	explicit PostgresTypeSet(PostgresSchemaEntry &schema, unique_ptr<PostgresResultSlice> enum_result = nullptr,
-	                         unique_ptr<PostgresResultSlice> composite_type_result = nullptr);
+	                         unique_ptr<PostgresResultSlice> composite_type_result = nullptr,
+	                         bool entries_loaded = true);
 
 public:
 	optional_ptr<CatalogEntry> CreateType(PostgresTransaction &transaction, CreateTypeInfo &info);
