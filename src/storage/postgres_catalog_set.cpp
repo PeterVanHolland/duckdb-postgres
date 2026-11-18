@@ -106,6 +106,10 @@ void PostgresCatalogSet::PromoteStalenessSignature(string signature) {
 }
 
 void PostgresCatalogSet::LoadEntriesLocked(ClientContext &context, PostgresTransaction &transaction) {
+	if (catalog.Cast<PostgresCatalog>().lazy_load) {
+		// the full load replaces the entries looked up one by one
+		ClearEntriesLocked();
+	}
 	loading_thread = ThreadUtil::GetThreadId();
 	try {
 		LoadEntries(context, transaction);
@@ -181,14 +185,23 @@ bool PostgresCatalogSet::EntriesStale(ClientContext &context) {
 optional_ptr<CatalogEntry> PostgresCatalogSet::LookupEntry(ClientContext &context, PostgresTransaction &transaction,
                                                            const string &name) {
 	shared_ptr<CatalogEntry> cached;
+	bool has_entries;
 	{
 		lock_guard<mutex> l(entry_lock);
-		auto entry = FindEntryLocked(name);
+		has_entries = !entries.empty();
+		auto entry = entries.find(name);
+		if (entry == entries.end() && missing_spellings.count(name)) {
+			entry = FindEntryLocked(name);
+		}
 		if (entry != entries.end()) {
 			cached = entry->second;
 		}
 	}
-	if (cached && !EntriesStale(context)) {
+	// a change on the server drops the cached entries, whether the name is among them or not
+	if (has_entries && EntriesStale(context)) {
+		cached.reset();
+	}
+	if (cached) {
 		return transaction.ReferenceEntry(cached);
 	}
 	LoadEntriesByName(transaction, name);
@@ -197,6 +210,10 @@ optional_ptr<CatalogEntry> PostgresCatalogSet::LookupEntry(ClientContext &contex
 	auto entry = FindEntryLocked(name);
 	if (entry == entries.end()) {
 		return nullptr;
+	}
+	if (entry->first != name) {
+		// the exact spelling has no entry on the server, so its case insensitive match serves it from now on
+		missing_spellings.insert(name);
 	}
 	return transaction.ReferenceEntry(entry->second);
 }
@@ -270,6 +287,7 @@ void PostgresCatalogSet::ClearEntriesLocked() {
 	lock_guard<mutex> entry_guard(entry_lock);
 	entry_map.clear();
 	entries.clear();
+	missing_spellings.clear();
 	is_loaded = false;
 }
 

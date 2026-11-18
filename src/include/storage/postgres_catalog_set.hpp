@@ -15,6 +15,7 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/thread.hpp"
+#include "duckdb/common/unordered_set.hpp"
 
 namespace duckdb {
 struct DropInfo;
@@ -84,6 +85,8 @@ private:
 	mutex load_lock;
 	catalog_entry_map_t entries;
 	case_insensitive_map_t<string> entry_map;
+	//! Looked up spellings that have no entry of their own, which their case insensitive match serves
+	unordered_set<string> missing_spellings;
 	atomic<bool> is_loaded;
 	atomic<thread_id> loading_thread;
 	string staleness_signature;

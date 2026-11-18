@@ -86,9 +86,14 @@ WHERE query LIKE '%lower(relname)=lower(''lazy_load_mixed'')%'
 ----
 1
 
-# the cached entry serves its own spelling as well
+# the cached entry serves its own spelling and the spelling without a table of its own
 query I
 SELECT x FROM s.public."Lazy_Load_Mixed"
+----
+7
+
+query I
+SELECT x FROM s.public.lazy_load_mixed
 ----
 7
 
@@ -97,9 +102,25 @@ SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog') WHERE query LIKE '%r
 ----
 5
 
-# the staleness check applies to the tables looked up so far
+# a cached table of another spelling does not hide the table of the exact spelling
+query I
+SELECT * FROM s.public."SameCaseName"
+----
+42
+
+query I
+SELECT * FROM s.public.samecasename
+----
+hello world
+
+# with the staleness check, a cached table that was altered on the server is read again
 statement ok
 SET GLOBAL pg_staleness_query_enabled = TRUE
+
+query I
+SELECT i FROM s.public.lazy_load_new
+----
+42
 
 statement ok
 CALL postgres_execute('s', 'ALTER TABLE lazy_load_new ADD COLUMN j INT')
@@ -108,6 +129,20 @@ query II
 SELECT * FROM s.public.lazy_load_new
 ----
 42	NULL
+
+# the lookup of a table that is not cached yet drops the stale cached tables as well
+statement ok
+CALL postgres_execute('s', 'ALTER TABLE lazy_load_new ADD COLUMN k INT')
+
+query I
+SELECT count(*) >= 0 FROM s.public.pg_bytetypes
+----
+true
+
+query III
+SELECT * FROM s.public.lazy_load_new
+----
+42	NULL	NULL
 
 statement ok
 RESET GLOBAL pg_staleness_query_enabled
