@@ -401,7 +401,7 @@ optional_ptr<CatalogEntry> PostgresTableSet::ReloadEntry(PostgresTransaction &tr
 	}
 	auto table_entry = make_shared_ptr<PostgresTableEntry>(catalog, schema, *table_info);
 	auto result = CreateEntry(transaction, std::move(table_entry));
-	RefreshStalenessSignature(transaction, /*use_transaction_connection=*/false);
+	RefreshStalenessSignature(transaction, /*use_transaction_connection=*/true);
 	return result;
 }
 

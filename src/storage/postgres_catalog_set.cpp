@@ -120,7 +120,8 @@ void PostgresCatalogSet::LoadEntriesLocked(ClientContext &context, PostgresTrans
 		loading_thread = thread_id();
 		throw;
 	}
-	RefreshStalenessSignature(transaction, /*use_transaction_connection=*/false);
+	// the connection that loaded the entries gives the signature of the same snapshot, and takes nothing from the pool
+	RefreshStalenessSignature(transaction, /*use_transaction_connection=*/true);
 	is_loaded = true;
 	loading_thread = thread_id();
 }
@@ -177,19 +178,20 @@ bool PostgresCatalogSet::LookupEntry(ClientContext &context, PostgresTransaction
 	if (is_loaded) {
 		return false;
 	}
-	// the staleness query runs outside load_lock, as a connection of the pool must not wait behind a commit
-	auto staleness_query = GetStalenessQuery(context);
-	string signature;
-	if (!staleness_query.empty()) {
-		signature = ComputeStalenessSignature(*RunStalenessQuery(catalog, context, staleness_query));
-	}
 	lock_guard<mutex> lock(load_lock);
 	if (is_loaded) {
 		return false;
 	}
-	if (!staleness_query.empty() && signature != staleness_signature) {
-		// a change on the server drops the cached entries, whether the name is among them or not
-		ClearEntriesLocked();
+	// the connection of the transaction reads the signature and the entry from one snapshot, and a connection of the
+	// pool must not wait behind a commit under load_lock
+	auto staleness_query = GetStalenessQuery(context);
+	string signature;
+	if (!staleness_query.empty()) {
+		signature = ComputeStalenessSignature(*transaction.Query(staleness_query));
+		if (signature != staleness_signature) {
+			// a change on the server drops the cached entries, whether the name is among them or not
+			ClearEntriesLocked();
+		}
 	}
 	{
 		lock_guard<mutex> l(entry_lock);
@@ -204,7 +206,6 @@ bool PostgresCatalogSet::LookupEntry(ClientContext &context, PostgresTransaction
 	}
 	LoadEntriesByName(transaction, name);
 	if (!staleness_query.empty()) {
-		// the signature from before the lookup, so a change on the server since then is still found
 		SetStalenessSignature(transaction, std::move(signature));
 	}
 	lock_guard<mutex> l(entry_lock);
