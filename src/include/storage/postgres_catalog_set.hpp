@@ -67,11 +67,11 @@ private:
 	unique_lock<mutex> LoadEntriesForRead(ClientContext &context, PostgresTransaction &transaction);
 	//! Finds an entry by its name or its case insensitive match, must be called with entry_lock held
 	catalog_entry_map_t::iterator FindEntryLocked(const string &name);
-	//! Looks one entry up without loading the whole set, must be called with load_lock held
-	optional_ptr<CatalogEntry> LookupEntry(ClientContext &context, PostgresTransaction &transaction,
-	                                       const string &name);
-	//! Clears the entries when the staleness query shows a change, must be called with load_lock held
-	bool EntriesStale(ClientContext &context);
+	//! Looks one entry up without loading the whole set, false when the set turns out to be loaded
+	bool LookupEntry(ClientContext &context, PostgresTransaction &transaction, const string &name,
+	                 optional_ptr<CatalogEntry> &entry);
+	//! Takes a signature, staged until the commit while the transaction is open
+	void SetStalenessSignature(PostgresTransaction &transaction, string signature);
 
 protected:
 public:

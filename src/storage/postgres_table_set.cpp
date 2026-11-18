@@ -33,13 +33,15 @@ string PostgresTableSet::GetInitializeQuery(PostgresVersion version, const strin
 	return GetInitializeQuery(version, vec, table, case_insensitive);
 }
 
-//! Compares the name column with the table name, through lower() for a case insensitive lookup
+//! Compares the name column with the table name, folding the case for a case insensitive lookup
 static string TableNameCondition(const string &column, const string &table, bool case_insensitive) {
 	auto literal = PostgresUtils::WriteLiteral(table);
-	if (case_insensitive) {
-		return "lower(" + column + ")=lower(" + literal + ")";
+	if (!case_insensitive) {
+		return column + "=" + literal;
 	}
-	return column + "=" + literal;
+	// ASCII letters are folded like DuckDB folds names, whatever the locale of the server
+	const string fold = ", 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')";
+	return "translate(" + column + fold + "=translate(" + literal + fold;
 }
 
 //! Expression returning 'g' for generated columns, 'd' for columns that have a default value (including SERIAL and

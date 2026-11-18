@@ -30,9 +30,9 @@ PostgresCatalogSet::catalog_entry_map_t::iterator PostgresCatalogSet::FindEntryL
 optional_ptr<CatalogEntry> PostgresCatalogSet::GetEntry(ClientContext &context, PostgresTransaction &transaction,
                                                         const string &name) {
 	if (SupportReload() && catalog.Cast<PostgresCatalog>().lazy_load) {
-		lock_guard<mutex> lock(load_lock);
-		if (!is_loaded) {
-			return LookupEntry(context, transaction, name);
+		optional_ptr<CatalogEntry> entry;
+		if (LookupEntry(context, transaction, name, entry)) {
+			return entry;
 		}
 	}
 	{
@@ -90,9 +90,12 @@ void PostgresCatalogSet::RefreshStalenessSignature(PostgresTransaction &transact
 	}
 	auto result = use_transaction_connection ? transaction.Query(staleness_query)
 	                                         : RunStalenessQuery(catalog, context, staleness_query);
-	auto signature = ComputeStalenessSignature(*result);
+	SetStalenessSignature(transaction, ComputeStalenessSignature(*result));
+}
+
+void PostgresCatalogSet::SetStalenessSignature(PostgresTransaction &transaction, string signature) {
 	if (transaction.GetTransactionState() == PostgresTransactionState::TRANSACTION_STARTED) {
-		// transaction still open - only valid on commit, since xmin reverts on rollback
+		// the signature of an open transaction only holds after its commit, since xmin reverts on rollback
 		transaction.StageStalenessSignature(*this, std::move(signature));
 		return;
 	}
@@ -106,7 +109,7 @@ void PostgresCatalogSet::PromoteStalenessSignature(string signature) {
 }
 
 void PostgresCatalogSet::LoadEntriesLocked(ClientContext &context, PostgresTransaction &transaction) {
-	if (catalog.Cast<PostgresCatalog>().lazy_load) {
+	if (SupportReload() && catalog.Cast<PostgresCatalog>().lazy_load) {
 		// the full load replaces the entries looked up one by one
 		ClearEntriesLocked();
 	}
@@ -169,53 +172,52 @@ void PostgresCatalogSet::TryLoadEntries(ClientContext &context, PostgresTransact
 	LoadEntriesLocked(context, transaction);
 }
 
-bool PostgresCatalogSet::EntriesStale(ClientContext &context) {
+bool PostgresCatalogSet::LookupEntry(ClientContext &context, PostgresTransaction &transaction, const string &name,
+                                     optional_ptr<CatalogEntry> &entry) {
+	if (is_loaded) {
+		return false;
+	}
+	// the staleness query runs outside load_lock, as a connection of the pool must not wait behind a commit
 	auto staleness_query = GetStalenessQuery(context);
-	if (staleness_query.empty()) {
+	string signature;
+	if (!staleness_query.empty()) {
+		signature = ComputeStalenessSignature(*RunStalenessQuery(catalog, context, staleness_query));
+	}
+	lock_guard<mutex> lock(load_lock);
+	if (is_loaded) {
 		return false;
 	}
-	auto result = RunStalenessQuery(catalog, context, staleness_query);
-	if (ComputeStalenessSignature(*result) == staleness_signature) {
-		return false;
+	if (!staleness_query.empty() && signature != staleness_signature) {
+		// a change on the server drops the cached entries, whether the name is among them or not
+		ClearEntriesLocked();
 	}
-	ClearEntriesLocked();
-	return true;
-}
-
-optional_ptr<CatalogEntry> PostgresCatalogSet::LookupEntry(ClientContext &context, PostgresTransaction &transaction,
-                                                           const string &name) {
-	shared_ptr<CatalogEntry> cached;
-	bool has_entries;
 	{
 		lock_guard<mutex> l(entry_lock);
-		has_entries = !entries.empty();
-		auto entry = entries.find(name);
-		if (entry == entries.end() && missing_spellings.count(name)) {
-			entry = FindEntryLocked(name);
+		auto cached = entries.find(name);
+		if (cached == entries.end() && missing_spellings.count(name)) {
+			cached = FindEntryLocked(name);
 		}
-		if (entry != entries.end()) {
-			cached = entry->second;
+		if (cached != entries.end()) {
+			entry = transaction.ReferenceEntry(cached->second);
+			return true;
 		}
-	}
-	// a change on the server drops the cached entries, whether the name is among them or not
-	if (has_entries && EntriesStale(context)) {
-		cached.reset();
-	}
-	if (cached) {
-		return transaction.ReferenceEntry(cached);
 	}
 	LoadEntriesByName(transaction, name);
-	RefreshStalenessSignature(transaction, /*use_transaction_connection=*/false);
-	lock_guard<mutex> l(entry_lock);
-	auto entry = FindEntryLocked(name);
-	if (entry == entries.end()) {
-		return nullptr;
+	if (!staleness_query.empty()) {
+		// the signature from before the lookup, so a change on the server since then is still found
+		SetStalenessSignature(transaction, std::move(signature));
 	}
-	if (entry->first != name) {
+	lock_guard<mutex> l(entry_lock);
+	auto loaded = FindEntryLocked(name);
+	if (loaded == entries.end()) {
+		return true;
+	}
+	if (loaded->first != name) {
 		// the exact spelling has no entry on the server, so its case insensitive match serves it from now on
 		missing_spellings.insert(name);
 	}
-	return transaction.ReferenceEntry(entry->second);
+	entry = transaction.ReferenceEntry(loaded->second);
+	return true;
 }
 
 void PostgresCatalogSet::LoadEntriesByName(PostgresTransaction &transaction, const string &name) {

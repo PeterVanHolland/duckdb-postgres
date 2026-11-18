@@ -31,7 +31,7 @@ SELECT count(*) FROM s.public.pg_numtypes
 # every lookup introspected its own table, none introspected a whole schema
 query I
 SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog')
-WHERE query LIKE '%relpages%' AND query NOT LIKE '%AND relname=%' AND query NOT LIKE '%lower(relname)=%'
+WHERE query LIKE '%relpages%' AND query NOT LIKE '%AND relname=%' AND query NOT LIKE '%translate(relname%'
 ----
 0
 
@@ -82,7 +82,7 @@ SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog') WHERE query LIKE '%r
 
 query I
 SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog')
-WHERE query LIKE '%lower(relname)=lower(''lazy_load_mixed'')%'
+WHERE query LIKE '%=translate(''lazy_load_mixed''%'
 ----
 1
 
@@ -156,7 +156,7 @@ true
 query I
 SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog')
 WHERE query LIKE '%relpages%' AND query LIKE '%nspname IN (''public'')%'
-AND query NOT LIKE '%AND relname=%' AND query NOT LIKE '%lower(relname)=%'
+AND query NOT LIKE '%AND relname=%' AND query NOT LIKE '%translate(relname%'
 ----
 1
 
