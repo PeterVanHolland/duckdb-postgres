@@ -17,8 +17,9 @@
 
 namespace duckdb {
 
-PostgresSchemaEntry::PostgresSchemaEntry(Catalog &catalog, CreateSchemaInfo &info)
-    : SchemaCatalogEntry(catalog, info), tables(*this), indexes(*this), types(*this) {
+PostgresSchemaEntry::PostgresSchemaEntry(Catalog &catalog, CreateSchemaInfo &info, bool entries_loaded)
+    : SchemaCatalogEntry(catalog, info), tables(*this, nullptr, entries_loaded),
+      indexes(*this, nullptr, entries_loaded), types(*this, nullptr, nullptr, entries_loaded) {
 }
 
 PostgresSchemaEntry::PostgresSchemaEntry(Catalog &catalog, CreateSchemaInfo &info,

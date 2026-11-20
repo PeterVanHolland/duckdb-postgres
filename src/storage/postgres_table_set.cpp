@@ -21,14 +21,27 @@
 
 namespace duckdb {
 
-PostgresTableSet::PostgresTableSet(PostgresSchemaEntry &schema, unique_ptr<PostgresResultSlice> table_result_p)
-    : PostgresInSchemaSet(schema, !table_result_p), table_result(std::move(table_result_p)) {
+PostgresTableSet::PostgresTableSet(PostgresSchemaEntry &schema, unique_ptr<PostgresResultSlice> table_result_p,
+                                   bool entries_loaded)
+    : PostgresInSchemaSet(schema, !table_result_p && entries_loaded), table_result(std::move(table_result_p)) {
 }
 
-string PostgresTableSet::GetInitializeQuery(PostgresVersion version, const string &schema, const string &table) {
+string PostgresTableSet::GetInitializeQuery(PostgresVersion version, const string &schema, const string &table,
+                                            bool case_insensitive) {
 	vector<string> vec;
 	vec.push_back(schema);
-	return GetInitializeQuery(version, vec, table);
+	return GetInitializeQuery(version, vec, table, case_insensitive);
+}
+
+//! Compares the name column with the table name, folding the case for a case insensitive lookup
+static string TableNameCondition(const string &column, const string &table, bool case_insensitive) {
+	auto literal = PostgresUtils::WriteLiteral(table);
+	if (!case_insensitive) {
+		return column + "=" + literal;
+	}
+	// ASCII letters are folded like DuckDB folds names, whatever the locale of the server
+	const string fold = ", 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')";
+	return "translate(" + column + fold + "=translate(" + literal + fold;
 }
 
 //! Expression returning 'g' for generated columns, 'd' for columns that have a default value (including SERIAL and
@@ -81,8 +94,8 @@ LEFT JOIN pg_description tbl_desc ON tbl_desc.objoid=pg_class.oid AND tbl_desc.o
 WHERE relkind = 'v' ${CONDITION})";
 }
 
-string PostgresTableSet::GetInitializeQuery(PostgresVersion version, const vector<string> &schemas,
-                                            const string &table) {
+string PostgresTableSet::GetInitializeQuery(PostgresVersion version, const vector<string> &schemas, const string &table,
+                                            bool case_insensitive) {
 	string base_query = R"(
 SELECT pg_namespace.oid AS namespace_id, relname, relpages, attname,
     pg_type.typname type_name, atttypmod type_modifier, pg_attribute.attndims ndim,
@@ -116,7 +129,7 @@ ORDER BY namespace_id, relname, attnum, constraint_id;
 		condition += "AND pg_namespace.nspname IN (" + PostgresUtils::WriteLiteralsCommaSeparated(schemas) + ")";
 	}
 	if (!table.empty()) {
-		condition += "AND relname=" + PostgresUtils::WriteLiteral(table);
+		condition += "AND " + TableNameCondition("relname", table, case_insensitive);
 	}
 	base_query = StringUtil::Replace(base_query, "${COLUMN_DEFAULT}", GetColumnDefaultExpression(version));
 	base_query = StringUtil::Replace(
@@ -125,13 +138,15 @@ ORDER BY namespace_id, relname, attnum, constraint_id;
 	return StringUtil::Replace(base_query, "${CONDITION}", condition);
 }
 
-string PostgresTableSet::GetInitializeQueryInformationSchema(const string &schema, const string &table) {
+string PostgresTableSet::GetInitializeQueryInformationSchema(const string &schema, const string &table,
+                                                             bool case_insensitive) {
 	vector<string> vec;
 	vec.push_back(schema);
-	return GetInitializeQueryInformationSchema(vec, table);
+	return GetInitializeQueryInformationSchema(vec, table, case_insensitive);
 }
 
-string PostgresTableSet::GetInitializeQueryInformationSchema(const vector<string> &schemas, const string &table) {
+string PostgresTableSet::GetInitializeQueryInformationSchema(const vector<string> &schemas, const string &table,
+                                                             bool case_insensitive) {
 	string base_query = R"(
 SELECT table_schema AS namespace_id, table_name AS relname, 0 AS relpages, column_name AS attname,
     data_type AS type_name, -1 AS type_modifier, 0 AS ndim, ordinal_position AS attnum,
@@ -148,7 +163,7 @@ ORDER BY table_schema, table_name, ordinal_position;
 		condition += "AND table_schema IN (" + PostgresUtils::WriteLiteralsCommaSeparated(schemas) + ")";
 	}
 	if (!table.empty()) {
-		condition += " AND table_name=" + PostgresUtils::WriteLiteral(table);
+		condition += " AND " + TableNameCondition("table_name", table, case_insensitive);
 	}
 	return StringUtil::Replace(base_query, "${CONDITION}", condition);
 }
@@ -292,6 +307,24 @@ void PostgresTableSet::LoadEntries(ClientContext &context, PostgresTransaction &
 	}
 }
 
+string PostgresTableSet::GetInitializeQuery(PostgresTransaction &transaction, const string &table_name,
+                                            bool case_insensitive) {
+	if (PostgresUtils::UseInformationSchemaIntrospection(transaction.GetContext())) {
+		return GetInitializeQueryInformationSchema(schema.name.GetIdentifierName(), table_name, case_insensitive);
+	}
+	return GetInitializeQuery(catalog.Cast<PostgresCatalog>().GetPostgresVersion(), schema.name.GetIdentifierName(),
+	                          table_name, case_insensitive);
+}
+
+void PostgresTableSet::LoadEntriesByName(PostgresTransaction &transaction, const string &table_name) {
+	// the exact name is found through the index on the names, another spelling by comparing every name of the schema
+	auto result = transaction.Query(GetInitializeQuery(transaction, table_name, false));
+	if (result->Count() == 0) {
+		result = transaction.Query(GetInitializeQuery(transaction, table_name, true));
+	}
+	CreateEntries(transaction, *result, 0, result->Count());
+}
+
 string PostgresTableSet::GetStalenessQuery(ClientContext &context) const {
 	if (!PostgresUtils::StalenessQueryEnabled(context)) {
 		return string();
@@ -368,7 +401,7 @@ optional_ptr<CatalogEntry> PostgresTableSet::ReloadEntry(PostgresTransaction &tr
 	}
 	auto table_entry = make_shared_ptr<PostgresTableEntry>(catalog, schema, *table_info);
 	auto result = CreateEntry(transaction, std::move(table_entry));
-	RefreshStalenessSignature(transaction, /*use_transaction_connection=*/false);
+	RefreshStalenessSignature(transaction, /*use_transaction_connection=*/true);
 	return result;
 }
 

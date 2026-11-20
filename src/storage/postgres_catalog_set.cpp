@@ -2,6 +2,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/catalog/catalog.hpp"
 
+#include "postgres_result.hpp"
 #include "storage/postgres_catalog.hpp"
 #include "storage/postgres_transaction.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
@@ -13,24 +14,32 @@ PostgresCatalogSet::PostgresCatalogSet(Catalog &catalog, bool is_loaded_p)
     : catalog(catalog), is_loaded(is_loaded_p), loading_thread(thread_id()) {
 }
 
+PostgresCatalogSet::catalog_entry_map_t::iterator PostgresCatalogSet::FindEntryLocked(const string &name) {
+	auto entry = entries.find(name);
+	if (entry != entries.end()) {
+		return entry;
+	}
+	// the case insensitive map holds the stored spelling of the name
+	auto name_entry = entry_map.find(name);
+	if (name_entry == entry_map.end()) {
+		return entries.end();
+	}
+	return entries.find(name_entry->second);
+}
+
 optional_ptr<CatalogEntry> PostgresCatalogSet::GetEntry(ClientContext &context, PostgresTransaction &transaction,
                                                         const string &name) {
+	if (SupportReload() && catalog.Cast<PostgresCatalog>().lazy_load) {
+		optional_ptr<CatalogEntry> entry;
+		if (LookupEntry(context, transaction, name, entry)) {
+			return entry;
+		}
+	}
 	{
 		auto l = LoadEntriesForRead(context, transaction);
-		auto entry = entries.find(name);
+		auto entry = FindEntryLocked(name);
 		if (entry != entries.end()) {
-			// entry found
 			return transaction.ReferenceEntry(entry->second);
-		}
-		// check the case insensitive map if there are any entries
-		auto name_entry = entry_map.find(name);
-		if (name_entry != entry_map.end()) {
-			// try again with the entry we found in the case insensitive map
-			auto entry = entries.find(name_entry->second);
-			if (entry != entries.end()) {
-				// still not found
-				return transaction.ReferenceEntry(entry->second);
-			}
 		}
 	}
 	// entry not found
@@ -81,9 +90,12 @@ void PostgresCatalogSet::RefreshStalenessSignature(PostgresTransaction &transact
 	}
 	auto result = use_transaction_connection ? transaction.Query(staleness_query)
 	                                         : RunStalenessQuery(catalog, context, staleness_query);
-	auto signature = ComputeStalenessSignature(*result);
+	SetStalenessSignature(transaction, ComputeStalenessSignature(*result));
+}
+
+void PostgresCatalogSet::SetStalenessSignature(PostgresTransaction &transaction, string signature) {
 	if (transaction.GetTransactionState() == PostgresTransactionState::TRANSACTION_STARTED) {
-		// transaction still open - only valid on commit, since xmin reverts on rollback
+		// the signature of an open transaction only holds after its commit, since xmin reverts on rollback
 		transaction.StageStalenessSignature(*this, std::move(signature));
 		return;
 	}
@@ -97,6 +109,10 @@ void PostgresCatalogSet::PromoteStalenessSignature(string signature) {
 }
 
 void PostgresCatalogSet::LoadEntriesLocked(ClientContext &context, PostgresTransaction &transaction) {
+	if (SupportReload() && catalog.Cast<PostgresCatalog>().lazy_load) {
+		// the full load replaces the entries looked up one by one
+		ClearEntriesLocked();
+	}
 	loading_thread = ThreadUtil::GetThreadId();
 	try {
 		LoadEntries(context, transaction);
@@ -104,7 +120,8 @@ void PostgresCatalogSet::LoadEntriesLocked(ClientContext &context, PostgresTrans
 		loading_thread = thread_id();
 		throw;
 	}
-	RefreshStalenessSignature(transaction, /*use_transaction_connection=*/false);
+	// the connection that loaded the entries gives the signature of the same snapshot, and takes nothing from the pool
+	RefreshStalenessSignature(transaction, /*use_transaction_connection=*/true);
 	is_loaded = true;
 	loading_thread = thread_id();
 }
@@ -154,6 +171,58 @@ void PostgresCatalogSet::TryLoadEntries(ClientContext &context, PostgresTransact
 		return;
 	}
 	LoadEntriesLocked(context, transaction);
+}
+
+bool PostgresCatalogSet::LookupEntry(ClientContext &context, PostgresTransaction &transaction, const string &name,
+                                     optional_ptr<CatalogEntry> &entry) {
+	if (is_loaded) {
+		return false;
+	}
+	lock_guard<mutex> lock(load_lock);
+	if (is_loaded) {
+		return false;
+	}
+	// the connection of the transaction reads the signature and the entry from one snapshot, and a connection of the
+	// pool must not wait behind a commit under load_lock
+	auto staleness_query = GetStalenessQuery(context);
+	string signature;
+	if (!staleness_query.empty()) {
+		signature = ComputeStalenessSignature(*transaction.Query(staleness_query));
+		if (signature != staleness_signature) {
+			// a change on the server drops the cached entries, whether the name is among them or not
+			ClearEntriesLocked();
+		}
+	}
+	{
+		lock_guard<mutex> l(entry_lock);
+		auto cached = entries.find(name);
+		if (cached == entries.end() && missing_spellings.count(name)) {
+			cached = FindEntryLocked(name);
+		}
+		if (cached != entries.end()) {
+			entry = transaction.ReferenceEntry(cached->second);
+			return true;
+		}
+	}
+	LoadEntriesByName(transaction, name);
+	if (!staleness_query.empty()) {
+		SetStalenessSignature(transaction, std::move(signature));
+	}
+	lock_guard<mutex> l(entry_lock);
+	auto loaded = FindEntryLocked(name);
+	if (loaded == entries.end()) {
+		return true;
+	}
+	if (loaded->first != name) {
+		// the exact spelling has no entry on the server, so its case insensitive match serves it from now on
+		missing_spellings.insert(name);
+	}
+	entry = transaction.ReferenceEntry(loaded->second);
+	return true;
+}
+
+void PostgresCatalogSet::LoadEntriesByName(PostgresTransaction &transaction, const string &name) {
+	throw InternalException("PostgresCatalogSet does not support LoadEntriesByName");
 }
 
 optional_ptr<CatalogEntry> PostgresCatalogSet::ReloadEntry(PostgresTransaction &transaction, const string &name) {
@@ -206,18 +275,10 @@ optional_ptr<CatalogEntry> PostgresCatalogSet::CreateEntry(PostgresTransaction &
 
 void PostgresCatalogSet::InvalidateEntry(const string &name) {
 	lock_guard<mutex> l(entry_lock);
-	auto entry = entries.find(name);
-	if (entry == entries.end()) {
-		auto name_entry = entry_map.find(name);
-		if (name_entry == entry_map.end()) {
-			return;
-		}
-		entry = entries.find(name_entry->second);
-		if (entry == entries.end()) {
-			return;
-		}
+	auto entry = FindEntryLocked(name);
+	if (entry != entries.end()) {
+		entries.erase(entry);
 	}
-	entries.erase(entry);
 }
 
 void PostgresCatalogSet::ClearEntries() {
@@ -229,11 +290,16 @@ void PostgresCatalogSet::ClearEntriesLocked() {
 	lock_guard<mutex> entry_guard(entry_lock);
 	entry_map.clear();
 	entries.clear();
+	missing_spellings.clear();
 	is_loaded = false;
 }
 
 PostgresInSchemaSet::PostgresInSchemaSet(PostgresSchemaEntry &schema, bool is_loaded)
     : PostgresCatalogSet(schema.ParentCatalog(), is_loaded), schema(schema) {
+}
+
+PostgresResultSlice::PostgresResultSlice(unique_ptr<PostgresResult> result_p)
+    : result(result_p.release()), start(0), end(result->Count()) {
 }
 
 optional_ptr<CatalogEntry> PostgresInSchemaSet::CreateEntry(PostgresTransaction &transaction,

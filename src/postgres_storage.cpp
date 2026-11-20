@@ -126,6 +126,7 @@ static unique_ptr<Catalog> PostgresAttach(optional_ptr<StorageExtensionInfo> sto
 	string secret_storage_table_name;
 	bool secret_storage_table_specified_explicitly = false;
 	string connect_display;
+	bool lazy_load = false;
 	for (auto &entry : attach_options.options) {
 		auto lower_name = StringUtil::Lower(entry.first);
 		if (lower_name == "secret") {
@@ -153,15 +154,17 @@ static unique_ptr<Catalog> PostgresAttach(optional_ptr<StorageExtensionInfo> sto
 			secret_storage_table_specified_explicitly = true;
 		} else if (lower_name == "connect_display") {
 			connect_display = ExtractConnectDisplay(entry.second);
+		} else if (lower_name == "lazy_load") {
+			lazy_load = BooleanValue::Get(entry.second.DefaultCastAs(LogicalType::BOOLEAN));
 		} else {
 			throw BinderException("Unrecognized option for Postgres attach: %s", entry.first);
 		}
 	}
 	SecretStorageTable secret_storage_table(std::move(secret_storage_table_name),
 	                                        secret_storage_table_specified_explicitly);
-	return make_uniq<PostgresCatalog>(context, db, std::move(attach_path), attach_options.access_mode,
-	                                  std::move(schemas_to_load), isolation_level, secret_name,
-	                                  std::move(secret_storage_table), text_protocol_mode, std::move(connect_display));
+	return make_uniq<PostgresCatalog>(
+	    context, db, std::move(attach_path), attach_options.access_mode, std::move(schemas_to_load), isolation_level,
+	    secret_name, std::move(secret_storage_table), text_protocol_mode, std::move(connect_display), lazy_load);
 }
 
 static unique_ptr<TransactionManager> PostgresCreateTransactionManager(optional_ptr<StorageExtensionInfo> storage_info,

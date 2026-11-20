@@ -15,8 +15,8 @@
 
 namespace duckdb {
 
-PostgresSchemaSet::PostgresSchemaSet(Catalog &catalog, vector<string> schemas_to_load_p)
-    : PostgresCatalogSet(catalog, false), schemas_to_load(std::move(schemas_to_load_p)) {
+PostgresSchemaSet::PostgresSchemaSet(Catalog &catalog, vector<string> schemas_to_load_p, bool lazy_load)
+    : PostgresCatalogSet(catalog, false), schemas_to_load(std::move(schemas_to_load_p)), lazy_load(lazy_load) {
 }
 
 vector<unique_ptr<PostgresResultSlice>> SliceResult(PostgresResult &schemas, unique_ptr<PostgresResult> to_slice_ptr) {
@@ -123,7 +123,25 @@ void PostgresSchemaSet::LoadEntriesInformationSchema(ClientContext &context, Pos
 	}
 }
 
+void PostgresSchemaSet::LoadSchemasOnly(ClientContext &context, PostgresTransaction &transaction) {
+	bool information_schema = PostgresUtils::UseInformationSchemaIntrospection(context);
+	auto result = transaction.Query(information_schema ? GetInitializeQueryInformationSchema(schemas_to_load)
+	                                                   : GetInitializeQuery(schemas_to_load));
+	auto rows = result->Count();
+	for (idx_t row = 0; row < rows; row++) {
+		auto schema_name = result->GetString(row, information_schema ? 0 : 1);
+		CreateSchemaInfo info;
+		info.SetSchema(Identifier(schema_name));
+		info.internal = PostgresSchemaEntry::SchemaIsInternal(schema_name);
+		CreateEntry(transaction, make_shared_ptr<PostgresSchemaEntry>(catalog, info, false));
+	}
+}
+
 void PostgresSchemaSet::LoadEntries(ClientContext &context, PostgresTransaction &transaction) {
+	if (lazy_load) {
+		LoadSchemasOnly(context, transaction);
+		return;
+	}
 	if (PostgresUtils::UseInformationSchemaIntrospection(context)) {
 		LoadEntriesInformationSchema(context, transaction);
 		return;
