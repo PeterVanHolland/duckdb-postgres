@@ -18,7 +18,7 @@ struct CreateSchemaInfo;
 
 class PostgresSchemaSet : public PostgresCatalogSet {
 public:
-	explicit PostgresSchemaSet(Catalog &catalog, vector<string> schemas_to_load);
+	PostgresSchemaSet(Catalog &catalog, vector<string> schemas_to_load, bool lazy_load);
 
 public:
 	optional_ptr<CatalogEntry> CreateSchema(PostgresTransaction &transaction, CreateSchemaInfo &info);
@@ -29,10 +29,13 @@ public:
 protected:
 	void LoadEntries(ClientContext &context, PostgresTransaction &transaction) override;
 	void LoadEntriesInformationSchema(ClientContext &context, PostgresTransaction &transaction);
+	void LoadSchemasOnly(ClientContext &context, PostgresTransaction &transaction);
 
 protected:
 	//! Schema to load - if empty loads all schemas (default behavior)
 	vector<string> schemas_to_load;
+	//! Load the schemas without their tables, types and indexes, which load when they are first used
+	bool lazy_load;
 };
 
 } // namespace duckdb

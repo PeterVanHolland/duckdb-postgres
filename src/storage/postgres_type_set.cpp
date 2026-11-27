@@ -6,6 +6,7 @@
 #include "duckdb/parser/parser.hpp"
 
 #include "postgres_utils.hpp"
+#include "storage/postgres_catalog.hpp"
 #include "storage/postgres_schema_entry.hpp"
 #include "storage/postgres_type_entry.hpp"
 #include "storage/postgres_transaction.hpp"
@@ -19,8 +20,8 @@ struct PGTypeInfo {
 };
 
 PostgresTypeSet::PostgresTypeSet(PostgresSchemaEntry &schema, unique_ptr<PostgresResultSlice> enum_result_p,
-                                 unique_ptr<PostgresResultSlice> composite_type_result_p)
-    : PostgresInSchemaSet(schema, !enum_result_p), enum_result(std::move(enum_result_p)),
+                                 unique_ptr<PostgresResultSlice> composite_type_result_p, bool entries_loaded)
+    : PostgresInSchemaSet(schema, !enum_result_p && entries_loaded), enum_result(std::move(enum_result_p)),
       composite_type_result(std::move(composite_type_result_p)) {
 }
 
@@ -156,7 +157,15 @@ void PostgresTypeSet::InitializeCompositeTypes(PostgresTransaction &transaction,
 
 void PostgresTypeSet::LoadEntries(ClientContext &context, PostgresTransaction &transaction) {
 	if (!enum_result || !composite_type_result) {
-		throw InternalException("PostgresTypeSet::LoadEntries not defined without enum/composite type result");
+		// a lazily loaded schema reads its types on first use, information_schema introspection reads none
+		if (PostgresUtils::UseInformationSchemaIntrospection(context)) {
+			return;
+		}
+		vector<string> schemas {schema.name.GetIdentifierName()};
+		auto version = catalog.Cast<PostgresCatalog>().GetPostgresVersion();
+		enum_result = make_uniq<PostgresResultSlice>(transaction.Query(GetInitializeEnumsQuery(version, schemas)));
+		composite_type_result =
+		    make_uniq<PostgresResultSlice>(transaction.Query(GetInitializeCompositesQuery(schemas)));
 	}
 	InitializeEnums(transaction, *enum_result);
 	InitializeCompositeTypes(transaction, *composite_type_result);

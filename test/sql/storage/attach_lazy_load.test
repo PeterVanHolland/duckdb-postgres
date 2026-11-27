@@ -1,0 +1,176 @@
+# name: test/sql/storage/attach_lazy_load.test
+# description: With LAZY_LOAD, tables are introspected one by one as they are looked up
+# group: [storage]
+
+require postgres_scanner
+
+require-env POSTGRES_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'dbname=postgresscanner' AS s (TYPE POSTGRES, LAZY_LOAD true)
+
+statement ok
+CALL postgres_execute('s', 'DROP TABLE IF EXISTS lazy_load_new')
+
+statement ok
+CALL postgres_execute('s', 'DROP TABLE IF EXISTS "Lazy_Load_Mixed"')
+
+statement ok
+CALL enable_logging('PostgresQueryLog')
+
+query I
+SELECT * FROM s.some_schema.some_table
+----
+two
+
+query I
+SELECT count(*) FROM s.public.pg_numtypes
+----
+4
+
+# every lookup introspected its own table, none introspected a whole schema
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog')
+WHERE query LIKE '%relpages%' AND query NOT LIKE '%AND relname=%' AND query NOT LIKE '%translate(relname%'
+----
+0
+
+query I
+SELECT list_sort(list(regexp_extract(query, 'AND relname=''(\w+)''', 1)))
+FROM duckdb_logs_parsed('PostgresQueryLog') WHERE query LIKE '%relpages%'
+----
+[pg_numtypes, some_table]
+
+# a second lookup is served from the cache
+query I
+SELECT count(*) FROM s.public.pg_numtypes
+----
+4
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog') WHERE query LIKE '%relpages%'
+----
+2
+
+# a table created after the attach is found with one lookup
+statement ok
+CALL postgres_execute('s', 'CREATE TABLE lazy_load_new AS SELECT 42 AS i')
+
+query I
+SELECT i FROM s.public.lazy_load_new
+----
+42
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog') WHERE query LIKE '%relpages%'
+----
+3
+
+# a name that only matches case insensitively takes a second lookup that compares the names case insensitively
+statement ok
+CALL postgres_execute('s', 'CREATE TABLE "Lazy_Load_Mixed" AS SELECT 7 AS x')
+
+query I
+SELECT x FROM s.public.lazy_load_mixed
+----
+7
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog') WHERE query LIKE '%relpages%'
+----
+5
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog')
+WHERE query LIKE '%=translate(''lazy_load_mixed''%'
+----
+1
+
+# the cached entry serves its own spelling and the spelling without a table of its own
+query I
+SELECT x FROM s.public."Lazy_Load_Mixed"
+----
+7
+
+query I
+SELECT x FROM s.public.lazy_load_mixed
+----
+7
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog') WHERE query LIKE '%relpages%'
+----
+5
+
+# a cached table of another spelling does not hide the table of the exact spelling
+query I
+SELECT * FROM s.public."SameCaseName"
+----
+42
+
+query I
+SELECT * FROM s.public.samecasename
+----
+hello world
+
+# with the staleness check, a cached table that was altered on the server is read again
+statement ok
+SET GLOBAL pg_staleness_query_enabled = TRUE
+
+query I
+SELECT i FROM s.public.lazy_load_new
+----
+42
+
+statement ok
+CALL postgres_execute('s', 'ALTER TABLE lazy_load_new ADD COLUMN j INT')
+
+query II
+SELECT * FROM s.public.lazy_load_new
+----
+42	NULL
+
+# the lookup of a table that is not cached yet drops the stale cached tables as well
+statement ok
+CALL postgres_execute('s', 'ALTER TABLE lazy_load_new ADD COLUMN k INT')
+
+query I
+SELECT count(*) >= 0 FROM s.public.pg_bytetypes
+----
+true
+
+query III
+SELECT * FROM s.public.lazy_load_new
+----
+42	NULL	NULL
+
+statement ok
+RESET GLOBAL pg_staleness_query_enabled
+
+# listing the tables introspects the whole schema once
+query I
+SELECT count(*) > 100 FROM duckdb_tables() WHERE database_name = 's' AND schema_name = 'public'
+----
+true
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PostgresQueryLog')
+WHERE query LIKE '%relpages%' AND query LIKE '%nspname IN (''public'')%'
+AND query NOT LIKE '%AND relname=%' AND query NOT LIKE '%translate(relname%'
+----
+1
+
+# a missing table is looked up on the server, then DuckDB lists every schema for a suggestion
+statement error
+SELECT * FROM s.public.lazy_load_missing
+----
+does not exist
+
+statement ok
+CALL postgres_execute('s', 'DROP TABLE lazy_load_new')
+
+statement ok
+CALL postgres_execute('s', 'DROP TABLE "Lazy_Load_Mixed"')
+
+statement ok
+DETACH s

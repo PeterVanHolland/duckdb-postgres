@@ -24,7 +24,8 @@ string GetPostgresCreateTable(CreateTableInfo &info);
 
 class PostgresTableSet : public PostgresInSchemaSet {
 public:
-	explicit PostgresTableSet(PostgresSchemaEntry &schema, unique_ptr<PostgresResultSlice> tables = nullptr);
+	explicit PostgresTableSet(PostgresSchemaEntry &schema, unique_ptr<PostgresResultSlice> tables = nullptr,
+	                          bool entries_loaded = true);
 
 public:
 	optional_ptr<CatalogEntry> CreateTable(PostgresTransaction &transaction, BoundCreateTableInfo &info);
@@ -37,14 +38,21 @@ public:
 
 	void AlterTable(ClientContext &context, PostgresTransaction &transaction, AlterTableInfo &info);
 
-	static string GetInitializeQuery(PostgresVersion version, const string &schema, const string &table = string());
+	//! The introspection of the tables of the schemas, or of the table of the given name
+	static string GetInitializeQuery(PostgresVersion version, const string &schema, const string &table = string(),
+	                                 bool case_insensitive = false);
 	static string GetInitializeQuery(PostgresVersion version, const vector<string> &schemas,
-	                                 const string &table = string());
-	static string GetInitializeQueryInformationSchema(const string &schema = string(), const string &table = string());
-	static string GetInitializeQueryInformationSchema(const vector<string> &schemas, const string &table = string());
+	                                 const string &table = string(), bool case_insensitive = false);
+	static string GetInitializeQueryInformationSchema(const string &schema = string(), const string &table = string(),
+	                                                  bool case_insensitive = false);
+	static string GetInitializeQueryInformationSchema(const vector<string> &schemas, const string &table = string(),
+	                                                  bool case_insensitive = false);
 
 protected:
 	void LoadEntries(ClientContext &context, PostgresTransaction &transaction) override;
+	void LoadEntriesByName(PostgresTransaction &transaction, const string &table_name) override;
+	//! The introspection of one table of this schema, in the introspection mode of the transaction's context
+	string GetInitializeQuery(PostgresTransaction &transaction, const string &table_name, bool case_insensitive);
 	bool SupportReload() const override {
 		return true;
 	}

@@ -39,13 +39,16 @@ public:
 	explicit PostgresCatalog(ClientContext &ctx, AttachedDatabase &db_p, string attach_path, AccessMode access_mode,
 	                         vector<string> schemas_to_load, PostgresIsolationLevel isolation_level,
 	                         const string &secret_name, SecretStorageTable secret_storage_table_p,
-	                         PostgresTextProtocolMode text_protocol_mode, string connect_display = string());
+	                         PostgresTextProtocolMode text_protocol_mode, string connect_display = string(),
+	                         bool lazy_load = false);
 	~PostgresCatalog();
 
 	string attach_path;
 	AccessMode access_mode;
 	PostgresIsolationLevel isolation_level;
 	PostgresTextProtocolMode text_protocol_mode;
+	//! Introspect tables one by one as they are looked up, instead of every table of a schema at its first lookup
+	bool lazy_load;
 
 public:
 	void Initialize(bool load_builtin) override;
