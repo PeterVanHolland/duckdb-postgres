@@ -286,6 +286,8 @@ void PostgresConnection::Reset(const std::string &health_check_query) {
 		PGresult *res = PQexec(conn, "DISCARD ALL");
 		PostgresResult res_holder(res);
 		if (PQresultStatus(res) == PGRES_COMMAND_OK) {
+			// DISCARD ALL resets the session settings to the defaults of the server
+			PostgresUtils::RequireStandardStrings(conn);
 			return;
 		}
 	}
@@ -293,6 +295,7 @@ void PostgresConnection::Reset(const std::string &health_check_query) {
 	if (!PingServerInternal(health_check_query)) {
 		throw InternalException("Connection reset failure");
 	}
+	PostgresUtils::RequireStandardStrings(conn);
 }
 
 vector<IndexInfo> PostgresConnection::GetIndexInfo(const string &table_name) {
